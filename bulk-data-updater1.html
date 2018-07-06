@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>bulk-data-updater</title>
+    <!--  (c) 2014 Rally Software Development Corp.  All Rights Reserved. -->
+    <!--  Build Date: Sat Jul 26 2014 17:13:13 GMT-0700 (PDT) -->
+    
+    <script type="text/javascript">
+        var APP_BUILD_DATE = "Sat Jul 26 2014 17:13:13 GMT-0700 (PDT)";
+        var CHECKSUM = 15986451168;
+    </script>
+    
+    <script type="text/javascript" src="/apps/2.0rc2/sdk.js"></script>
+
+    <script type="text/javascript">
+        Rally.onReady(function() {
+             
+/**
+ * A link that pops up a version dialog box
+ */
+
+Ext.define('Rally.technicalservices.InfoLink',{
+    extend: 'Ext.Component',
+    alias: 'widget.tsinfolink',
+    
+    /**
+     * @cfg {String} informationHtml
+     * Additional text to be displayed on the popup dialog (for example,
+     * to add a description of the app's use or functionality)
+     */
+    informationHtml: null,
+    
+    /**
+     * 
+     * cfg {String} title
+     * The title for the dialog box
+     */
+     title: "Build Information",
+    
+    renderTpl: "<div id='{id}-infolinkWrap' class='tsinfolink'>--</div>",
+
+    initComponent: function() {
+        this.callParent(arguments);
+       
+    },
+    
+    onRender: function() {
+        this.callParent(arguments);
+        this.mon(this.el,'click',this.onClick,this);
+    },
+    _generateChecksum: function(string){
+        var chk = 0x12345678,
+            i;
+        string = string.replace(/var CHECKSUM = .*;/,"");
+        
+        for (i = 0; i < string.length; i++) {
+            chk += (string.charCodeAt(i) * i);
+        }
+    
+        return chk;
+    },
+    _checkChecksum: function(container) {
+        var me = this;
+        Ext.Ajax.request({
+            url: document.URL,
+            params: {
+                id: 1
+            },
+            success: function (response) {
+                text = response.responseText;
+                if ( CHECKSUM ) {
+                    if ( CHECKSUM !== me._generateChecksum(text) ) {
+                        console.log("Checksums don't match!");
+                        if ( me.dialog ) {
+                            me.dialog.add({xtype:'container',html:'Checksums do not match'});
+                        }
+                    }
+                }
+            }
+        });
+    },
+    onClick: function(e) {
+        var me = this;
+        this._checkChecksum(this);
+        
+        var dialog_items = [];
+        
+        if ( this.informationHtml ) {
+            dialog_items.push({
+                xtype:'container',
+                html: this.informationHtml
+            });
+        }
+                
+        dialog_items.push({
+            xtype:'container',
+            html:"This app was created by the Rally Technical Services Team."
+        });
+        
+        if ( APP_BUILD_DATE ) {
+            dialog_items.push({
+                xtype:'container',
+                html:'Build date/time: ' + APP_BUILD_DATE
+            });
+        }
+        
+        if (this.dialog){this.dialog.destroy();}
+        this.dialog = Ext.create('Rally.ui.dialog.Dialog',{
+            defaults: { padding: 5, margin: 5 },
+            closable: true,
+            draggable: true,
+            title: me.title,
+            items: dialog_items
+        });
+        this.dialog.show();
+    }
+});
+
+/*
+ */
+Ext.define('Rally.technicalservices.Logger',{
+    constructor: function(config){
+        Ext.apply(this,config);
+    },
+    log: function(args){
+        var timestamp = "[ " + Ext.util.Format.date(new Date(), "Y-m-d H:i:s.u") + " ]";
+        //var output_args = arguments;
+        //output_args.unshift( [ "[ " + timestamp + " ]" ] );
+        //output_args = Ext.Array.push(output_args,arguments);
+        
+        var output_args = [];
+        output_args = Ext.Array.push(output_args,[timestamp]);
+        output_args = Ext.Array.push(output_args, Ext.Array.slice(arguments,0));
+
+        window.console && console.log.apply(console,output_args);
+    }
+
+});
+
+Ext.define('Rally.technicalservices.RegExpReplacer',{
+  //extend: 'Rally.data.custom.Store',  
+    source_data_store: null, //wsapi data store
+    target_field: '', //field to be transformed
+    regex_string: '', //regular expression to be transformed
+    replace_string: '', //replacement string 
+    fields: ['FormattedID','Name'],
+    
+    constructor: function(config){
+        Ext.apply(this,config);
+    },
+    _getFields: function(){
+        var fields = ['FormattedID'];
+        fields.push(this.target_field);
+        return fields; 
+    },
+    _getTransformedFieldName: function(){
+        return 'x_' + this.target_field;
+    },
+    transformData: function(){
+        //Transforms the data 
+        var records = [];  var i=0;
+        var xfield = this._getTransformedFieldName();
+        var me = this;
+
+        var fields = me._getFields();
+        var source_records = this.source_data_store.getRecords();
+        Ext.Array.each(source_records, function(record){
+            var record_fields ={}; 
+            Ext.Array.each(fields, function(field){
+                record_fields[field] = record.get(field);
+            });
+            record_fields[xfield]=me._transformString(record.get(me.target_field));
+            //TODO: only push records that will be updated;  Don't show all records.
+            
+            if (record_fields[xfield].toString() != record_fields[me.target_field].toString()){
+                records.push(record_fields);
+            }
+        });
+        this.data = records;
+    },
+    getCustomStore: function(){
+        return Ext.create('Rally.data.custom.Store',{
+            limit: 'Infinity',
+            data: this.data
+        });
+    },
+    updateData: function(){
+        var deferred = Ext.create('Deft.Deferred');
+        
+        var me = this; 
+        var xfield = me._getTransformedFieldName();
+        //Updates only the data that changed in the database
+
+        var promises = [];
+        Ext.Array.each(this.data, function(record_to_update){
+            var formattedId = record_to_update['FormattedID'];
+            var rec = me.source_data_store.findRecord('FormattedID', formattedId);
+            rec.set(me.target_field,record_to_update[xfield]);
+            promises.push(this._saveRecord(rec)); 
+        }, this);
+        Deft.Promise.all(promises).then({
+            success: function(records){
+                deferred.resolve(records);
+            },
+            failure: function(error) {
+                deferred.reject(error);
+            }
+        });
+        return deferred.promise;
+    },
+    _saveRecord: function(record){
+        var deferred = Ext.create('Deft.Deferred');
+        record.save({
+            callback: function(result, operation){
+                if (operation.wasSuccessful()) {
+                    console.log("Saved ", result.get('FormattedID'));
+                    deferred.resolve(result);
+                } else {
+                    deferred.reject("Error saving " + record.get('FormattedID'));
+                }
+            }
+        });
+        return deferred.promise;
+    },
+    _transformString: function(oldValue){
+        var newValue = oldValue; 
+        //TODO: Need to test more complex regex expresssions
+        if (this.regex_string.length > 0){
+            re = new RegExp(this.regex_string);
+            newValue = oldValue.replace(re,this.replace_string);
+        }
+        return newValue;
+    },
+    getColumnConfigs: function(){
+        //TODO:  Get Display Names for Fields instead of using field names
+        return [{text:'FormattedID',dataIndex:'FormattedID'},
+                {text:this.target_field,dataIndex:this.target_field},
+                {text:'Update To',dataIndex: this._getTransformedFieldName()}];
+    }
+    
+    
+});
+
+Ext.define('CustomApp', {
+    extend: 'Rally.app.App',
+    componentCls: 'app',
+    logger: new Rally.technicalservices.Logger(),
+    items: [
+        // top, right, bottom, left
+        {xtype:'container',itemId:'container_desc',     margin:"20px 0px 0px 40px"},
+        {xtype:'container',itemId:'container_record',   margin:"20px 0px 0px 80px"},
+        {xtype:'container', margin:"4px 0px 0px 80px", defaults: { margin: 2 }, items:[
+            {xtype:'container',itemId:'container_field' },
+            {xtype:'container',itemId:'container_query', layout: 'hbox'},
+            {xtype:'container',itemId:'container_valFrom'},
+            {xtype:'container',itemId:'container_valTo', layout: 'hbox'},
+            {xtype:'container',itemId:'container_buttons', layout: 'hbox'},
+            {xtype:'container',itemId:'container_grid'}
+        ]}
+    ],
+
+    // Entry point into this app.
+    launch: function() {
+        var thisApp = this;
+        thisApp.logger.log("launch: entry...");
+        thisApp._addDesc();
+        thisApp._addPickerRecord();
+        thisApp._addQueryBox();
+        thisApp._addPickerValFrom();
+        thisApp._addPickerValTo();
+        thisApp._addButtons();
+        thisApp.logger.log("launch: exit...");
+    },
+
+    _addDesc: function() {
+        var thisApp = this;
+        thisApp.logger.log("_addDesc: entry...");
+        thisApp.cb_record = thisApp.down('#container_desc').add({
+            xtype: 'component',
+            html: '<hr/>Bulk-Data-Updater:<br/>An app used to update a given field, on a given record type, for all objects found.<hr/>',
+            padding: 10,
+            border: 1,
+            style: {
+                width: '80%',
+                borderColor: 'blue',
+                borderStyle: 'solid'
+            }
+        });
+        thisApp.logger.log("_addDesc: exit...");
+    },
+    
+    _addQueryBox: function() {
+        var container = this.down('#container_query');
+        container.add({
+            xtype:'rallytextfield',
+            itemId: 'wsapi_query_box',
+            stateId: 'techservices-regexreplacer-wsapi-query',
+            stateful: true,
+            stateEvents: ['change'],
+            fieldLabel: 'Wsapi-Query',
+            labelWidth: 120,
+            width: 400,
+            labelCls: 'ts-nice-text',
+            shadow: true,
+            listeners: {
+                scope: this,
+                change: function() {
+                    this._clearCounts();
+                }
+            }
+        });
+        container.add({
+            xtype:'container',
+            itemId: 'wsapi_query_result_count',
+            margin: 2,
+            cls: 'ts-nice-text',
+            tpl: '<tpl>Count: {count}</tpl>'
+        });
+    },
+    _addPickerRecord: function() {
+        var thisApp = this;
+        thisApp.logger.log("_addPickerRecord: entry...");
+        thisApp.cb_record = thisApp.down('#container_record').add({
+            xtype: 'rallycombobox',
+            displayField: 'DisplayName',
+            fieldLabel: 'Record-type:',
+            stateId: 'techservices-regexreplacer-wsapi-record-type',
+            stateful: true,
+            stateEvents: ['change'],
+            labelWidth: 120,
+            width: 400,
+            labelCls: 'ts-nice-text',
+            shadow: true,
+            storeConfig: {
+                autoLoad: true,
+                model: 'TypeDefinition',
+                filters: [{property: 'Restorable', value: 'true'} ]
+            },
+            listeners: {
+                scope: thisApp,
+                change: function (cb) {
+                    thisApp.logger.log("_addPickerRecord:",cb.getRecord().get('TypePath'),"selected.");
+                    var rec_type = cb.getRecord().get('TypePath');
+                    thisApp._addPickerField(rec_type);
+                }
+            }
+        });
+        thisApp.logger.log("_addPickerRecord: exit...");
+    },
+
+    _addPickerField: function(rec_type) {
+        var thisApp = this;
+        thisApp.logger.log("_addPickerField: entry... arg =",rec_type);
+        
+        var _filterFields = function(item){
+            var attribute_defn = item.attributeDefinition;
+            if ( attribute_defn ) {
+                var attribute_type = attribute_defn.AttributeType;
+                if ( attribute_type == "STRING" ) {
+                    return true;
+                }
+            } 
+            return false;
+        };
+        
+        thisApp.down('#container_field').removeAll();
+        thisApp.cb_field = thisApp.down('#container_field').add({
+            xtype: 'rallyfieldcombobox',
+            itemId: 'field_selector',
+            fieldLabel: 'Field-name:',
+            stateId: 'techservices-regexreplacer-field-name',
+            stateful: true,
+            stateEvents: ['change'],
+            labelWidth: 120,
+            width: 400,
+            labelCls: 'ts-nice-text',
+            model: rec_type,
+            scope: this,
+             listeners: {
+                scope: thisApp,
+                change: function (cb) {
+                    var field_name = cb.getValue();
+                    this._clearCounts();
+                    thisApp.logger.log("_addPickerField:",field_name,"selected.");
+               }
+               
+            }
+        });
+        var store = thisApp.cb_field.getStore(); 
+        store.on('load',this._filterFields, this);
+        
+        thisApp.logger.log("_addPickerField: exit...");
+    },
+    _filterFields: function(store,records) {
+        store.filter([{
+            filterFn:function(field){
+                var attr_def = field.get('fieldDefinition').attributeDefinition;
+                if (attr_def && attr_def.AttributeType == "STRING"  && attr_def.ReadOnly == false){
+                    return true;
+                }
+                return false;
+            } 
+        }]);
+        this.down('#field_selector').setValue(store.getAt(1));
+    },
+    _addPickerValFrom: function() {
+        var thisApp = this;
+        thisApp.logger.log("_addPickerValFrom: entry...");
+        thisApp.down('#container_valFrom').removeAll();
+        thisApp.txt_find = thisApp.down('#container_valFrom').add({
+            xtype: 'rallytextfield',
+            fieldLabel: 'Source-string',
+            stateId: 'techservices-regexreplacer-source-string',
+            stateful: true,
+            stateEvents: ['change'],
+            labelWidth: 120,
+            width: 400,
+            labelCls: 'ts-nice-text',
+            shadow: true,
+            listeners: {
+                scope: this,
+                change: function() {
+                    this._clearCounts();
+                }
+            }
+        });
+        thisApp.logger.log("_addPickerValFrom: exit...");
+    },
+
+    _addPickerValTo: function() {
+        var thisApp = this;
+        thisApp.logger.log("_addPickerValTo: entry...");
+        var container = thisApp.down('#container_valTo');
+        container.removeAll();
+        thisApp.txt_replace = container.add({
+            xtype: 'rallytextfield',
+            fieldLabel: 'Destination-string',
+            stateId: 'techservices-regexreplacer-destination-string',
+            stateful: true,
+            stateEvents: ['change'],
+            labelWidth: 120,
+            width: 400,
+            labelCls: 'ts-nice-text',
+            shadow: true,
+            listeners: {
+                scope: this,
+                change: function() {
+                    this._clearCounts();
+                }
+            }
+        });
+        container.add({
+            xtype:'container',
+            itemId: 'wsapi_regex_change_count',
+            margin: 2,
+            cls: 'ts-nice-text',
+            tpl: '<tpl>Count: {count}</tpl>'
+        });
+        
+        thisApp.logger.log("_addPickerValTo: exit...");
+    },
+
+    _addButtons: function() {
+        var thisApp = this;
+        thisApp.logger.log("_addButtons: entry...");
+
+        thisApp.down('#container_buttons').add({
+            xtype: 'rallybutton',
+            text: 'List',
+            padding: "3px 10px 3px 10px",
+            margin: 8,
+            scope:this,
+            handler:  this._listMatches
+        });
+
+        thisApp.down('#container_buttons').add({
+            xtype: 'rallybutton',
+            text: 'Update',
+            padding: "3px 10px 3px 10px",
+            margin: 8,
+            scope:this,
+            handler: this._updateMatches
+        });
+        thisApp.logger.log("_addButtons: exit...");
+    },
+    _listMatches: function(){
+        var model = this.cb_record.getRecord().get('TypePath');
+        var field_name = this.cb_field.getValue();
+        var find = this.txt_find.getValue();
+        var replace = this.txt_replace.getValue();
+        this.logger.log('_listMatches model ', model, ' field', field_name);
+        
+        this.down('#container_grid').removeAll();
+        this._loadArtifacts(model,field_name).then({
+            scope: this, 
+            success: function(store){
+                this.down('#wsapi_query_result_count').update({count:store.getTotalCount()});
+                
+                this.logger.log('Create RegEx Replacer with FROM:', find);
+                this.logger.log('Create RegEx Replacer with TO  :', replace);
+            
+                this.regex_replacer = Ext.create('Rally.technicalservices.RegExpReplacer',{
+                    source_data_store: store,
+                    target_field: field_name,
+                    regex_string: find,
+                    replace_string: replace
+                });
+
+                this.regex_replacer.transformData();
+                
+                var grid_store = this.regex_replacer.getCustomStore();
+                grid_store.addListener('load',function(store){
+                    this.down('#wsapi_regex_change_count').update({count:grid_store.getTotalCount()});
+                }, this);
+                
+                this.down('#container_grid').add({
+                    xtype: 'rallygrid',
+                    showPagingToolbar: true,
+                    pagingToolbarCfg: {
+                        store: grid_store
+                    },
+                    store: grid_store,
+                    columnCfgs: this.regex_replacer.getColumnConfigs()
+                });
+                
+            },
+            failure: function(message){
+                this.logger.log('Failed to load data for model: ' + model);
+                alert("Problem loading " + model + ": " + message);
+            }
+        });
+        
+    },
+    _clearCounts: function() {
+        var counter_names = ['wsapi_query_result_count','wsapi_regex_change_count'];
+        
+        Ext.Array.each(counter_names,function(counter_name){
+            var counter = this.down('#' + counter_name);
+            if ( counter ) {
+                counter.update({count:""});
+            }
+        },this);
+    },
+    _updateMatches: function(){
+        this.setLoading("Saving records...");
+        
+        if (this.regex_replacer){
+            this.logger.log('update the data');
+            this.regex_replacer.updateData().then({
+                scope: this,
+                success: function(saved_items){
+                    alert("Saved " + saved_items.length + " items");
+                    this.setLoading(false);
+                },
+                failure: function(error) {
+                    alert(error);
+                    this.setLoading(false);
+                }
+            });
+        }
+    },
+    _loadArtifacts: function(model, field){
+        var deferred = Ext.create('Deft.Deferred');
+        this.setLoading("Loading " + model + " records...");
+        var filters = [{property:'ObjectID',operator:'>', value: 0}];
+        var wsapi_box = this.down('#wsapi_query_box');
+        if ( wsapi_box ) {
+            var query_string = Ext.util.Format.trim(wsapi_box.getValue());
+            if ( query_string !== "" ) {
+                this.logger.log('query:', query_string);
+                try {
+                    filters = Rally.data.wsapi.Filter.fromQueryString(query_string);
+                } catch (error) {
+                    deferred.reject("In WSAPI Query - " + error);
+                }
+            }
+        }
+        
+        Ext.create('Rally.data.wsapi.Store', {
+            model: model,
+            autoLoad: true,
+            limit:'Infinity',
+            filters: filters,
+            fetch: ['ObjectID','FormattedID','Name',field],
+            listeners: {
+                scope: this,
+                load: function(store, data, success) {
+                    if (success){
+                        this.logger.log("Starting with " + data.length + " records found from WSAPI query");
+                        this.setLoading(false);
+                        deferred.resolve(store);
+                    } else {
+                        this.setLoading(false);
+                        deferred.reject("Store load failed");
+                    }
+                }
+            }
+        });
+        
+        return deferred.promise; 
+    }
+
+});
+
+            
+               Rally.launchApp('CustomApp', {
+                   name: 'bulk-data-updater'
+               });
+        });
+    </script>
+    
+    <style type="text/css">
+
+.app {
+
+
+}
+.tsinfolink {
+    position:absolute;
+    right:0px;
+    width:5%;
+}
+
+.ts-nice-text {
+    font-size:14px;
+}
+
+
+
+    </style>
+
+</head>
+<body></body>
+</html>
